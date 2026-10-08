@@ -47,6 +47,7 @@ from submit_results import (
     _save_results,
     _successful_answers,
     build_submission_payload,
+    download_attachment,
     run_questions,
 )
 from tools import (
@@ -119,6 +120,27 @@ class AnswerNormalizationTests(unittest.TestCase):
         self.assertEqual(
             normalize_answer_for_question("How many at bats did he have?", response),
             "519",
+        )
+
+    def test_extracts_conclusion_count_without_using_earlier_dates(self):
+        response = (
+            "The albums released between 2000 and 2009 were A, B, and C. "
+            "Therefore, 3 studio albums were published."
+        )
+        self.assertEqual(
+            normalize_answer_for_question(
+                "How many studio albums were published between 2000 and 2009?",
+                response,
+            ),
+            "3",
+        )
+
+    def test_removes_source_user_label_from_who_answer(self):
+        self.assertEqual(
+            normalize_answer_for_question(
+                "Who nominated the article?", "User: FunkMonk"
+            ),
+            "FunkMonk",
         )
 
     def test_extracts_numeric_tail_with_unicode_unit(self):
@@ -194,6 +216,43 @@ class LocalEvaluationTests(unittest.TestCase):
 
 
 class CourseSubmissionTests(unittest.TestCase):
+    def test_attachment_404_falls_back_to_private_gaia_dataset(self):
+        response = MagicMock(status_code=404)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cached_file = Path(temp_dir) / "task.png"
+            cached_file.write_bytes(b"image")
+            with (
+                patch("submit_results.requests.get", return_value=response),
+                patch(
+                    "submit_results.hf_hub_download",
+                    return_value=str(cached_file),
+                ) as hub_download,
+                patch("builtins.print"),
+            ):
+                result = download_attachment(
+                    {"task_id": "task-id", "file_name": "task.png"},
+                    Path(temp_dir),
+                    "https://course.example",
+                )
+
+        self.assertEqual(result, cached_file)
+        hub_download.assert_called_once_with(
+            repo_id="gaia-benchmark/GAIA",
+            filename="2023/validation/task.png",
+            repo_type="dataset",
+        )
+
+    def test_attachment_filename_cannot_escape_validation_directory(self):
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            self.assertRaisesRegex(ValueError, "Unsafe official attachment"),
+        ):
+            download_attachment(
+                {"task_id": "task-id", "file_name": "../answer.json"},
+                Path(temp_dir),
+                "https://course.example",
+            )
+
     def test_submission_payload_matches_official_course_schema(self):
         questions = [{"task_id": "task-a"}, {"task_id": "task-b"}]
         payload = build_submission_payload(
@@ -217,14 +276,37 @@ class CourseSubmissionTests(unittest.TestCase):
             },
         )
 
-    def test_submission_payload_requires_every_official_answer(self):
-        with self.assertRaisesRegex(ValueError, "1 official answers are missing"):
+    def test_submission_payload_allows_successful_partial_answers(self):
+        payload = build_submission_payload(
+            username="student",
+            agent_space="student/public-agent",
+            questions=[{"task_id": "task-a"}, {"task_id": "task-b"}],
+            saved_answers={"task-a": "alpha"},
+        )
+        self.assertEqual(
+            payload["answers"],
+            [{"task_id": "task-a", "submitted_answer": "alpha"}],
+        )
+
+    def test_submission_payload_requires_at_least_one_answer(self):
+        with self.assertRaisesRegex(ValueError, "No successful official answers"):
             build_submission_payload(
                 username="student",
                 agent_space="student/public-agent",
-                questions=[{"task_id": "task-a"}, {"task_id": "task-b"}],
-                saved_answers={"task-a": "alpha"},
+                questions=[{"task_id": "task-a"}],
+                saved_answers={},
             )
+
+    def test_submission_payload_normalizes_cached_answer(self):
+        payload = build_submission_payload(
+            username="student",
+            agent_space="student/public-agent",
+            questions=[
+                {"task_id": "task-a", "question": "How many albums?"}
+            ],
+            saved_answers={"task-a": "Therefore, 3 albums were published."},
+        )
+        self.assertEqual(payload["answers"][0]["submitted_answer"], "3")
 
     def test_official_results_resume_only_successful_answers(self):
         questions = [{"task_id": "task-a"}, {"task_id": "task-b"}]

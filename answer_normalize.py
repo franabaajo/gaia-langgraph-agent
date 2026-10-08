@@ -20,6 +20,11 @@ _MEASURED_QUANTITY = (
     r"volume|mass|weight|length|distance|height|area|speed|rate|temperature|"
     r"duration|energy|power|pressure|density|angle|frequency|amount|measurement"
 )
+_CONCLUSION_COUNT = re.compile(
+    r"\b(?:therefore|thus|hence|so|the\s+(?:final\s+)?answer\s+is)"
+    r"\s*[:,]?\s*\**([-+]?(?:(?:\d{1,3}(?:,\d{3})+)|\d+))\**\b",
+    re.IGNORECASE,
+)
 
 
 def normalize_answer(value: object) -> str:
@@ -75,6 +80,15 @@ def normalize_answer_for_question(question: str, value: object) -> str:
     answer = normalize_answer(value)
     normalized_question = _normalize_unit_notation(question)
 
+    if re.search(r"^\s*who\b", normalized_question):
+        labeled_person = re.fullmatch(
+            r"(?:user(?:name)?|nominator)\s*:\s*(.+)",
+            answer,
+            re.IGNORECASE,
+        )
+        if labeled_person:
+            answer = labeled_person.group(1).strip()
+
     if (
         re.search(r"\b(?:without|no)\s+abbreviations?\b", normalized_question)
         and re.search(r"\b(?:city|location|place)\b", normalized_question)
@@ -105,6 +119,14 @@ def normalize_answer_for_question(question: str, value: object) -> str:
             final_line,
         ):
             answer = final_line
+
+    # Count questions require one number. Recover it only from an explicit
+    # conclusion cue, avoiding unrelated dates and list item numbers earlier
+    # in an explanation.
+    if re.search(r"\b(?:how many|number of)\b", normalized_question):
+        conclusion_counts = _CONCLUSION_COUNT.findall(answer)
+        if conclusion_counts:
+            answer = conclusion_counts[-1]
 
     match = _NUMBER_WITH_UNIT.fullmatch(answer)
     if not match:

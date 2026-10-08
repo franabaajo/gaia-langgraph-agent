@@ -14,12 +14,16 @@ from typing import Any
 
 import requests
 from dotenv import load_dotenv
+from huggingface_hub import hf_hub_download
 
 from agent import AgentConfigurationError, GaiaAgent, configuration_report
+from answer_normalize import normalize_answer_for_question
 
 DEFAULT_API_URL = "https://agents-course-unit4-scoring.hf.space"
 DEFAULT_OUTPUT = Path("official_course_results.json")
 REQUEST_TIMEOUT = 30
+GAIA_DATASET_ID = "gaia-benchmark/GAIA"
+GAIA_VALIDATION_DIR = "2023/validation"
 SPACE_ID_PATTERN = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$"
 )
@@ -39,20 +43,44 @@ def fetch_official_questions(api_url: str) -> list[dict[str, Any]]:
 def download_attachment(
     item: dict[str, Any], destination: Path, api_url: str
 ) -> Path | None:
-    """Download one official task attachment into the temporary run directory."""
+    """Download an attachment, falling back to the gated GAIA dataset."""
 
     file_name = item.get("file_name")
     task_id = item.get("task_id")
     if not file_name or not task_id:
         return None
-    output_path = destination / f"{task_id}_{Path(str(file_name)).name}"
+    safe_name = Path(str(file_name)).name
+    if safe_name != str(file_name) or safe_name in {"", ".", ".."}:
+        raise ValueError(f"Unsafe official attachment filename: {file_name!r}")
+
+    output_path = destination / f"{task_id}_{safe_name}"
     response = requests.get(
         f"{api_url}/files/{task_id}",
         timeout=REQUEST_TIMEOUT,
     )
-    response.raise_for_status()
-    output_path.write_bytes(response.content)
-    return output_path
+    if response.status_code != 404:
+        response.raise_for_status()
+        output_path.write_bytes(response.content)
+        return output_path
+
+    print(
+        "  Official attachment endpoint returned 404; "
+        "trying the gated GAIA dataset."
+    )
+    try:
+        cached_path = hf_hub_download(
+            repo_id=GAIA_DATASET_ID,
+            filename=f"{GAIA_VALIDATION_DIR}/{safe_name}",
+            repo_type="dataset",
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "The official attachment endpoint returned 404 and the GAIA "
+            "fallback could not download the file. Accept the dataset terms "
+            "at https://huggingface.co/datasets/gaia-benchmark/GAIA and run "
+            "'hf auth login' with a read-enabled token."
+        ) from exc
+    return Path(cached_path)
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
@@ -152,14 +180,21 @@ def build_submission_payload(
     if agent_space.split("/", 1)[0].casefold() != username.casefold():
         raise ValueError("HF_USERNAME must match the owner in HF_AGENT_SPACE.")
 
-    task_ids = [str(item.get("task_id", "")) for item in questions]
-    missing = [task_id for task_id in task_ids if not saved_answers.get(task_id)]
-    if missing:
-        preview = ", ".join(missing[:5])
-        suffix = "..." if len(missing) > 5 else ""
+    answers = [
+        {
+            "task_id": str(item.get("task_id", "")),
+            "submitted_answer": normalize_answer_for_question(
+                str(item.get("question", "")),
+                saved_answers[str(item.get("task_id", ""))],
+            ),
+        }
+        for item in questions
+        if saved_answers.get(str(item.get("task_id", "")))
+    ]
+    if not answers:
         raise ValueError(
-            f"{len(missing)} official answers are missing ({preview}{suffix}). "
-            "Run: python submit_results.py --all"
+            "No successful official answers are saved. Run: "
+            "python submit_results.py --all"
         )
 
     return {
@@ -167,10 +202,7 @@ def build_submission_payload(
         "agent_code": (
             f"https://huggingface.co/spaces/{agent_space}/tree/main"
         ),
-        "answers": [
-            {"task_id": task_id, "submitted_answer": saved_answers[task_id]}
-            for task_id in task_ids
-        ],
+        "answers": answers,
     }
 
 
@@ -290,10 +322,8 @@ def submit_saved_results(args: argparse.Namespace, api_url: str) -> int:
     result = response.json()
     print("Submission accepted: yes")
     print(f"Score: {result.get('score', 'N/A')}%")
-    print(
-        "Correct: "
-        f"{result.get('correct_count', '?')}/{result.get('total_attempted', '?')}"
-    )
+    print(f"Correct official questions: {result.get('correct_count', '?')}")
+    print(f"Valid answers submitted: {result.get('total_attempted', '?')}")
     if result.get("message"):
         print(f"Message: {result['message']}")
     return 0
@@ -353,7 +383,7 @@ def main() -> int:
     parser.add_argument(
         "--submit",
         action="store_true",
-        help="Submit the complete saved answer set to the official scorer",
+        help="Submit the saved successful answers to the official scorer",
     )
     args = parser.parse_args()
 
