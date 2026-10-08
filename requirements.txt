@@ -7,6 +7,8 @@ xlrd>=2.0,<3
 beautifulsoup4>=4.13,<5
 ddgs>=9.0,<10
 huggingface_hub>=0.34,<2
+# Avoid newly published native wheels being blocked by Windows Application Control.
+orjson==3.11.9
 langgraph>=1.0,<2
 langchain-core>=1.0,<2
 langchain-openai>=1.0,<2

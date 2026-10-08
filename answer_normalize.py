@@ -106,7 +106,7 @@ def normalize_answer_for_question(question: str, value: object) -> str:
     # when the question itself requests a number or measured quantity.
     expects_number = bool(
         re.search(
-            rf"\b(?:how many|how much|number of|{_MEASURED_QUANTITY})\b",
+            rf"\b(?:how many|how much|number of|numeric output|{_MEASURED_QUANTITY})\b",
             normalized_question,
         )
     )

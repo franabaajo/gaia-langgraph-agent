@@ -122,6 +122,16 @@ class AnswerNormalizationTests(unittest.TestCase):
             "519",
         )
 
+    def test_extracts_final_numeric_output_from_explanation(self):
+        response = "The loop updates the value several times.\n\n20"
+        self.assertEqual(
+            normalize_answer_for_question(
+                "What is the final numeric output from the attached Python code?",
+                response,
+            ),
+            "20",
+        )
+
     def test_extracts_conclusion_count_without_using_earlier_dates(self):
         response = (
             "The albums released between 2000 and 2009 were A, B, and C. "
