@@ -12,7 +12,7 @@ pinned: false
 
 A tool-using question-answering agent built with LangGraph for the Hugging Face Agents Course Unit 4 final assignment. It handles web research, calculations, and multimodal attachments through bounded workflows and task-specific tools.
 
-**Official result:** 35% (7/20) on the course scorer, meeting the course completion threshold. The certificate has been claimed.
+**Official result:** 45% (9/20) on the course scorer, meeting the course completion threshold. The certificate has been claimed.
 
 ## How it works
 
